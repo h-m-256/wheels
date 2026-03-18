@@ -12,23 +12,25 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download cffi source
+      - name: Download and inspect cffi
         run: |
           pip download --no-binary :all: --no-deps "cffi==1.17.1" -d ./src_pkg
           cd src_pkg
           find . -name "*.tar.gz" -exec tar -xzf {} \;
-          PKG_DIR=$(find . \( -name "pyproject.toml" -o -name "setup.py" \) | head -1 | xargs dirname | sed 's|^\./||')
+          echo "=== Dirs in src_pkg ==="
+          ls -la
+          PKG_DIR=$(find . -maxdepth 1 -mindepth 1 -type d | head -1 | xargs basename)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-          echo "=== Source files ==="
-          ls -la src_pkg/$PKG_DIR/
+          echo "=== Root of $PKG_DIR ==="
+          ls src_pkg/$PKG_DIR/
+          echo "=== C files ==="
+          find src_pkg/$PKG_DIR -name "*.c" | head -20
 
-      - name: Try manual build first
+      - name: Manual build test
         run: |
-          pip install build
+          pip install build pycparser
           cd src_pkg/${{ env.PKG_DIR }}
-          python -m build --wheel 2>&1 | tee /tmp/manual_build.log || true
-          echo "=== Manual build result ==="
-          find dist -name "*.whl" 2>/dev/null || echo "No wheel in dist"
+          python -m build --wheel 2>&1 | tee /tmp/cffi_build.log || true
 
       - name: Build with cibuildwheel
         uses: pypa/cibuildwheel@v3.3.1
@@ -42,16 +44,13 @@ jobs:
           CIBW_BUILD_VERBOSITY: 3
           CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24"
           CIBW_BEFORE_ALL: "apt-get install -y libffi-dev || true"
-          CIBW_BEFORE_BUILD: "pip install pycparser && python setup.py --version"
+          CIBW_BEFORE_BUILD: "pip install pycparser"
         continue-on-error: true
 
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: debug-logs
-          path: |
-            /tmp/manual_build.log
-            /tmp/cibw-*.log
+          name: debug-cffi-logs
+          path: /tmp/cffi_build.log
           if-no-files-found: warn
 
   debug-numpy:
@@ -62,22 +61,25 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download numpy source
+      - name: Download and inspect numpy
         run: |
           pip download --no-binary :all: --no-deps "numpy==1.26.4" -d ./src_pkg
           cd src_pkg
           find . -name "*.tar.gz" -exec tar -xzf {} \;
-          PKG_DIR=$(find . \( -name "pyproject.toml" -o -name "setup.py" \) | head -1 | xargs dirname | sed 's|^\./||')
+          echo "=== Dirs in src_pkg ==="
+          ls -la
+          PKG_DIR=$(find . -maxdepth 1 -mindepth 1 -type d | head -1 | xargs basename)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-          echo "=== Source files ==="
-          ls -la src_pkg/$PKG_DIR/
-
-      - name: Check numpy build system
-        run: |
-          cd src_pkg/${{ env.PKG_DIR }}
-          cat pyproject.toml | head -50 || cat setup.py | head -50 || true
+          echo "=== Root of $PKG_DIR ==="
+          ls src_pkg/$PKG_DIR/
           echo "=== C files ==="
-          find . -name "*.c" | head -10
+          find src_pkg/$PKG_DIR -name "*.c" | head -10
+
+      - name: Manual build test
+        run: |
+          pip install build meson-python ninja Cython
+          cd src_pkg/${{ env.PKG_DIR }}
+          python -m build --wheel 2>&1 | tee /tmp/numpy_build.log || true
 
       - name: Build with cibuildwheel
         uses: pypa/cibuildwheel@v3.3.1
@@ -92,3 +94,84 @@ jobs:
           CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24 NPY_BLAS_ORDER= NPY_LAPACK_ORDER="
           CIBW_BEFORE_BUILD: "pip install meson-python ninja patchelf Cython"
         continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-numpy-logs
+          path: /tmp/numpy_build.log
+          if-no-files-found: warn
+
+  debug-cryptography:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          add-to-path: true
+
+      - name: Download and inspect cryptography
+        run: |
+          pip download --no-binary :all: --no-deps "cryptography==42.0.8" -d ./src_pkg
+          cd src_pkg
+          find . -name "*.tar.gz" -exec tar -xzf {} \;
+          PKG_DIR=$(find . -maxdepth 1 -mindepth 1 -type d | head -1 | xargs basename)
+          echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
+          echo "=== Root ==="
+          ls src_pkg/$PKG_DIR/
+          echo "=== Rust files ==="
+          find src_pkg/$PKG_DIR -name "*.rs" | head -5
+          echo "=== pyproject.toml ==="
+          cat src_pkg/$PKG_DIR/pyproject.toml | head -30
+
+      - name: Configure Rust cross-compile
+        run: |
+          NDK=${{ steps.setup-ndk.outputs.ndk-path }}
+          TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
+          mkdir -p ~/.cargo
+          cat >> ~/.cargo/config.toml << CARGO
+          [target.aarch64-linux-android]
+          linker = "$TOOLCHAIN/aarch64-linux-android24-clang"
+          ar = "$TOOLCHAIN/llvm-ar"
+          CARGO
+          echo "CC_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang" >> $GITHUB_ENV
+          echo "CXX_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang++" >> $GITHUB_ENV
+
+      - name: Manual build test
+        run: |
+          pip install build maturin cffi
+          cd src_pkg/${{ env.PKG_DIR }}
+          CARGO_BUILD_TARGET=aarch64-linux-android \
+          python -m build --wheel 2>&1 | tee /tmp/crypto_build.log || true
+
+      - name: Build with cibuildwheel
+        uses: pypa/cibuildwheel@v3.3.1
+        with:
+          package-dir: ./src_pkg/${{ env.PKG_DIR }}
+          output-dir: wheelhouse
+        env:
+          CIBW_PLATFORM: android
+          CIBW_ARCHS_ANDROID: arm64_v8a
+          CIBW_BUILD_FRONTEND: "build"
+          CIBW_BUILD_VERBOSITY: 3
+          CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24"
+          CIBW_BEFORE_ALL: "apt-get install -y libffi-dev pkg-config || true"
+          CIBW_BEFORE_BUILD: "pip install maturin cffi"
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-crypto-logs
+          path: /tmp/crypto_build.log
+          if-no-files-found: warn
