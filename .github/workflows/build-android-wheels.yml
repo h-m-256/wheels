@@ -44,6 +44,17 @@ jobs:
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
           echo "Found source: $PKG_DIR"
 
+      - name: Print build identifiers
+        uses: pypa/cibuildwheel@v3.3.1
+        with:
+          package-dir: ./src_pkg/${{ env.PKG_DIR }}
+          output-dir: wheelhouse
+        env:
+          CIBW_PLATFORM: android
+          CIBW_ARCHS_ANDROID: arm64_v8a
+          CIBW_BUILD_FRONTEND: "build"
+          CIBW_PRINT_BUILD_IDENTIFIERS: "true"
+
       - name: Build Android wheel
         uses: pypa/cibuildwheel@v3.3.1
         with:
@@ -52,8 +63,6 @@ jobs:
         env:
           CIBW_PLATFORM: android
           CIBW_ARCHS_ANDROID: arm64_v8a
-          CIBW_BUILD: "cp311-*"
-          CIBW_ENABLE: "android"
           CIBW_BUILD_FRONTEND: "build"
 
       - name: Upload artifact
@@ -82,7 +91,6 @@ jobs:
 
       - name: List wheels
         run: |
-          echo "=== Built wheels ==="
           find all-wheels -name "*.whl" | sort
           echo "Total: $(find all-wheels -name '*.whl' | wc -l)"
 
@@ -94,11 +102,7 @@ jobs:
           files: all-wheels/**/*.whl
           fail_on_unmatched_files: false
           body: |
-            ## Android ARM64 Wheels для Exteragram плагинов
+            Android ARM64 wheels для Exteragram плагинов.
             Платформа: android arm64_v8a, Python 3.11
-
-            Использование:
-            from mandre_lib import MandreInstall
-            MandreInstall("URL_к_файлу.whl")
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
