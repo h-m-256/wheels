@@ -1,0 +1,172 @@
+name: Build Android ARM64 Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Пакеты через пробел (оставь пустым для всех)'
+        required: false
+        default: ''
+  push:
+    branches: [main]
+    paths:
+      - 'packages.txt'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - "numpy==1.26.4"
+          - "regex==2024.11.6"
+          - "ujson==5.10.0"
+          - "orjson==3.10.12"
+          - "cryptography==42.0.8"
+          - "cffi==1.17.1"
+          - "zstandard==0.23.0"
+          - "lru-dict==1.3.0"
+          - "mutagen==1.47.0"
+          - "qrcode==8.0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Android NDK
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip -q android-ndk-r26d-linux.zip
+          echo "ANDROID_NDK_ROOT=$PWD/android-ndk-r26d" >> $GITHUB_ENV
+
+      - name: Set up cross-compilation environment
+        run: |
+          pip install crossenv cmake ninja
+
+          # Создаём Python для target (Android ARM64)
+          TOOLCHAIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+          TARGET=aarch64-linux-android
+          API=24
+
+          # crossenv создаёт виртуальное окружение для кросс-компиляции
+          python -m crossenv \
+            $TOOLCHAIN/bin/python3.11 \
+            --sysroot $TOOLCHAIN/sysroot \
+            cross_env
+          
+          echo "CROSS_ENV=$PWD/cross_env" >> $GITHUB_ENV
+          echo "$PWD/cross_env/cross/bin" >> $GITHUB_PATH
+
+      - name: Configure compiler flags
+        run: |
+          TOOLCHAIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+          
+          echo "CC=$TOOLCHAIN/bin/aarch64-linux-android24-clang" >> $GITHUB_ENV
+          echo "CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "CFLAGS=-target aarch64-linux-android24 -fPIC" >> $GITHUB_ENV
+          echo "CXXFLAGS=-target aarch64-linux-android24 -fPIC" >> $GITHUB_ENV
+          echo "LDFLAGS=-target aarch64-linux-android24" >> $GITHUB_ENV
+
+      - name: Build wheel
+        run: |
+          source $CROSS_ENV/bin/activate
+          pip install setuptools wheel build
+
+          # Специальные флаги для конкретных пакетов
+          PKG="${{ matrix.package }}"
+          PKG_NAME=$(echo $PKG | cut -d= -f1 | tr '[:upper:]' '[:lower:]')
+          
+          case $PKG_NAME in
+            numpy)
+              pip install meson-python
+              NUMPY_NO_SSE2=1 NUMPY_NO_NEON=0 pip wheel "$PKG" \
+                --no-build-isolation \
+                -w wheels/
+              ;;
+            cryptography)
+              pip install maturin
+              pip wheel "$PKG" \
+                --no-build-isolation \
+                -w wheels/
+              ;;
+            orjson)
+              # orjson требует Rust
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source $HOME/.cargo/env
+              rustup target add aarch64-linux-android
+              pip wheel "$PKG" -w wheels/
+              ;;
+            *)
+              pip wheel "$PKG" -w wheels/
+              ;;
+          esac
+
+      - name: Rename wheel to Android format
+        run: |
+          cd wheels
+          for whl in *.whl; do
+            if [[ $whl == *"linux_aarch64"* ]]; then
+              new_name="${whl/linux_aarch64/android_24_arm64_v8a}"
+              mv "$whl" "$new_name"
+              echo "Renamed: $whl -> $new_name"
+            fi
+          done
+          ls -la
+
+      - name: Upload wheel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.package }}
+          path: wheels/*.whl
+          retention-days: 30
+
+  # Собираем все wheels в один релиз
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: all-wheels
+          merge-multiple: true
+
+      - name: List built wheels
+        run: |
+          echo "=== Successfully built wheels ==="
+          find all-wheels -name "*.whl" | sort
+          echo ""
+          echo "Total: $(find all-wheels -name '*.whl' | wc -l) wheels"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wheels-${{ github.run_number }}
+          name: Android ARM64 Wheels (build ${{ github.run_number }})
+          files: all-wheels/**/*.whl
+          body: |
+            ## Android ARM64 Wheels для Exteragram плагинов
+            
+            Скомпилированы для: `android_24_arm64_v8a` (Android API 24+, ARM64)
+            Python: `3.11`
+            
+            ### Использование в плагине:
+            ```python
+            from mandre_lib import MandreInstall
+            MandreInstall("https://github.com/ВАШ_НИК/ВАШ_РЕПО/releases/download/wheels-${{ github.run_number }}/НАЗВАНИЕ.whl")
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
