@@ -12,46 +12,69 @@ jobs:
       fail-fast: false
       matrix:
         package:
-          - "numpy"
-          - "regex"
-          - "ujson"
-          - "orjson"
-          - "cryptography"
-          - "cffi"
-          - "zstandard"
-          - "lru-dict"
-          - "mutagen"
+          - { name: "regex", version: "2024.11.6" }
+          - { name: "ujson", version: "5.10.0" }
+          - { name: "zstandard", version: "0.23.0" }
+          - { name: "cffi", version: "1.17.1" }
+          - { name: "numpy", version: "2.2.0" }
+          - { name: "cryptography", version: "42.0.8" }
+          - { name: "lru-dict", version: "1.3.0" }
+          - { name: "mutagen", version: "1.47.0" }
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Chaquopy buildwheel
-        run: |
-          pip install chaquopy
+      - name: Install cibuildwheel
+        run: pip install cibuildwheel
 
-      - name: Build wheel for Android ARM64
+      - name: Download package source
         run: |
-          python -m chaquopy.buildwheel \
-            --python 3.11 \
-            --abi arm64-v8a \
-            ${{ matrix.package }}
+          pip download \
+            --no-binary :all: \
+            --no-deps \
+            "${{ matrix.package.name }}==${{ matrix.package.version }}" \
+            -d ./src_pkg
+          
+          # Распаковываем архив
+          cd src_pkg
+          for f in *.tar.gz; do tar -xzf "$f"; done
+          for f in *.zip; do unzip -q "$f"; done
+          
+          # Находим директорию с исходниками
+          PKG_DIR=$(find . -maxdepth 1 -type d | grep -v "^\.$" | head -1)
+          echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
+          echo "Found: $PKG_DIR"
+
+      - name: Build Android wheel
+        run: |
+          cd src_pkg/$PKG_DIR
+          python -m cibuildwheel \
+            --platform android \
+            --output-dir ../../wheelhouse
+        env:
+          CIBW_BUILD: "cp311-android_*"
+          CIBW_ARCHS_ANDROID: "arm64-v8a"
+          CIBW_BUILD_FRONTEND: "build[uv]"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.package }}
-          path: "*.whl"
+          name: wheel-${{ matrix.package.name }}
+          path: wheelhouse/*.whl
+          if-no-files-found: warn
           retention-days: 30
 
   release:
     needs: build
     runs-on: ubuntu-latest
     if: always()
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -62,22 +85,28 @@ jobs:
           merge-multiple: true
 
       - name: List wheels
-        run: find all-wheels -name "*.whl" | sort
+        run: |
+          echo "=== Built wheels ==="
+          find all-wheels -name "*.whl" | sort
+          echo "Total: $(find all-wheels -name '*.whl' | wc -l)"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: wheels-${{ github.run_number }}
-          name: Android ARM64 Wheels (build ${{ github.run_number }})
+          name: "Android ARM64 Wheels (build #${{ github.run_number }})"
           files: all-wheels/**/*.whl
+          fail_on_unmatched_files: false
           body: |
-            Android ARM64 wheels для Exteragram плагинов.
-            Платформа: `android_24_arm64_v8a`, Python `3.11`
+            ## Android ARM64 Wheels для Exteragram плагинов
 
-            ### Использование:
+            Платформа: `android_arm64_v8a`, Python `3.11`
+
+            ### Использование в плагине:
             ```python
             from mandre_lib import MandreInstall
-            MandreInstall("https://github.com/НИК/РЕПО/releases/download/wheels-${{ github.run_number }}/ФАЙЛ.whl")
+            MandreInstall("https://github.com/ВАШ_НИК/ВАШ_РЕПО/releases/download/wheels-${{ github.run_number }}/ФАЙЛ.whl")
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
