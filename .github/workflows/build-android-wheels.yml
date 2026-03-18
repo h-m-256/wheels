@@ -31,8 +31,6 @@ jobs:
           find ./src_pkg -name "*.zip" -exec unzip -q {} -d ./src_pkg \;
           PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-          echo "Found: $PKG_DIR"
-          ls "$PKG_DIR"
 
       - name: Build wheel
         uses: pypa/cibuildwheel@v3.3.1
@@ -52,43 +50,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  build-numpy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Download source
-        run: |
-          pip download --no-binary :all: --no-deps "numpy==1.26.4" -d ./src_pkg
-          find ./src_pkg -name "*.tar.gz" -exec tar -xzf {} -C ./src_pkg \;
-          PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
-          echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-          echo "Found: $PKG_DIR"
-          ls "$PKG_DIR"
-
-      - name: Build numpy
-        uses: pypa/cibuildwheel@v3.3.1
-        with:
-          package-dir: ${{ env.PKG_DIR }}
-          output-dir: wheelhouse
-        env:
-          CIBW_PLATFORM: android
-          CIBW_ARCHS_ANDROID: arm64_v8a
-          CIBW_BUILD_FRONTEND: "build"
-          CIBW_BUILD_VERBOSITY: 1
-          CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24 NPY_BLAS_ORDER= NPY_LAPACK_ORDER="
-          CIBW_BEFORE_BUILD: "pip install meson-python ninja patchelf Cython"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheel-numpy
-          path: wheelhouse/*.whl
-          if-no-files-found: warn
-          retention-days: 30
-
   build-cffi:
     runs-on: ubuntu-latest
     steps:
@@ -97,14 +58,20 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          add-to-path: true
+
       - name: Download source
         run: |
           pip download --no-binary :all: --no-deps "cffi==1.17.1" -d ./src_pkg
           find ./src_pkg -name "*.tar.gz" -exec tar -xzf {} -C ./src_pkg \;
           PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-          echo "Found: $PKG_DIR"
-          ls "$PKG_DIR"
+          echo "NDK=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
       - name: Build cffi
         uses: pypa/cibuildwheel@v3.3.1
@@ -117,8 +84,12 @@ jobs:
           CIBW_BUILD_FRONTEND: "build"
           CIBW_BUILD_VERBOSITY: 1
           CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24"
-          CIBW_BEFORE_ALL: "apt-get install -y libffi-dev || true"
-          CIBW_BEFORE_BUILD: "pip install pycparser"
+          CIBW_BEFORE_BUILD: |
+            pip install pycparser
+            NDK=${{ steps.setup-ndk.outputs.ndk-path }}
+            SYSROOT=$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+            cp -r $SYSROOT/usr/include/ffi* /usr/include/ || true
+            apt-get install -y libffi-dev 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -163,12 +134,11 @@ jobs:
 
       - name: Download source
         run: |
-          pip download --no-binary :all: --no-deps "cryptography==42.0.8" -d ./src_pkg
+          # cryptography 43+ поддерживает Python 3.13 / PyO3
+          pip download --no-binary :all: --no-deps "cryptography==43.0.3" -d ./src_pkg
           find ./src_pkg -name "*.tar.gz" -exec tar -xzf {} -C ./src_pkg \;
           PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-          echo "Found: $PKG_DIR"
-          ls "$PKG_DIR"
 
       - name: Build cryptography
         uses: pypa/cibuildwheel@v3.3.1
@@ -180,7 +150,7 @@ jobs:
           CIBW_ARCHS_ANDROID: arm64_v8a
           CIBW_BUILD_FRONTEND: "build"
           CIBW_BUILD_VERBOSITY: 1
-          CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24"
+          CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24 PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"
           CIBW_BEFORE_ALL: "apt-get install -y libffi-dev pkg-config || true"
           CIBW_BEFORE_BUILD: "pip install maturin cffi"
 
@@ -191,8 +161,73 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  build-numpy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          add-to-path: true
+
+      - name: Download source
+        run: |
+          pip download --no-binary :all: --no-deps "numpy==1.26.4" -d ./src_pkg
+          find ./src_pkg -name "*.tar.gz" -exec tar -xzf {} -C ./src_pkg \;
+          PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
+          echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
+
+      - name: Create meson cross file
+        run: |
+          NDK=${{ steps.setup-ndk.outputs.ndk-path }}
+          TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
+          cat > /tmp/android-cross.ini << CROSS
+          [binaries]
+          c = '$TOOLCHAIN/aarch64-linux-android24-clang'
+          cpp = '$TOOLCHAIN/aarch64-linux-android24-clang++'
+          ar = '$TOOLCHAIN/llvm-ar'
+          strip = '$TOOLCHAIN/llvm-strip'
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+          CROSS
+          echo "MESON_CROSS_FILE=/tmp/android-cross.ini" >> $GITHUB_ENV
+
+      - name: Build numpy
+        uses: pypa/cibuildwheel@v3.3.1
+        with:
+          package-dir: ${{ env.PKG_DIR }}
+          output-dir: wheelhouse
+        env:
+          CIBW_PLATFORM: android
+          CIBW_ARCHS_ANDROID: arm64_v8a
+          CIBW_BUILD_FRONTEND: "build"
+          CIBW_BUILD_VERBOSITY: 1
+          CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24 NPY_BLAS_ORDER= NPY_LAPACK_ORDER="
+          CIBW_BEFORE_BUILD: "pip install meson-python ninja patchelf Cython"
+          CIBW_CONFIG_SETTINGS: "setup-args=--cross-file=/tmp/android-cross.ini setup-args=-Dallow-noblas=true"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-numpy
+          path: wheelhouse/*.whl
+          if-no-files-found: warn
+          retention-days: 30
+
   release:
-    needs: [build-simple, build-numpy, build-cffi, build-cryptography]
+    needs: [build-simple, build-cffi, build-cryptography, build-numpy]
     runs-on: ubuntu-latest
     if: always()
     permissions:
@@ -231,4 +266,3 @@ jobs:
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
