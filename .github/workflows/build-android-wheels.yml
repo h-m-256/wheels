@@ -52,8 +52,9 @@ jobs:
         env:
           CIBW_PLATFORM: android
           CIBW_ARCHS_ANDROID: arm64_v8a
-          CIBW_BUILD: "cp311-android_*"
-          CIBW_BUILD_FRONTEND: "build[uv]"
+          CIBW_BUILD: "cp311-*"
+          CIBW_ENABLE: "android"
+          CIBW_BUILD_FRONTEND: "build"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -98,6 +99,6 @@ jobs:
 
             Использование:
             from mandre_lib import MandreInstall
-            MandreInstall("https://github.com/НИК/РЕПО/releases/download/wheels-N/ФАЙЛ.whl")
+            MandreInstall("URL_к_файлу.whl")
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
