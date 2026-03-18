@@ -51,8 +51,8 @@ jobs:
           output-dir: wheelhouse
         env:
           CIBW_PLATFORM: android
-          CIBW_ARCHS: arm64_v8a
-          CIBW_BUILD: "cp311-*"
+          CIBW_ARCHS_ANDROID: arm64_v8a
+          CIBW_BUILD: "cp311-android_*"
           CIBW_BUILD_FRONTEND: "build[uv]"
 
       - name: Upload artifact
