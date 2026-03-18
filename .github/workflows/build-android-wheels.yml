@@ -11,15 +11,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package:
+        include:
           - { name: "regex", version: "2024.11.6" }
-          - { name: "ujson", version: "5.10.0" }
-          - { name: "zstandard", version: "0.23.0" }
-          - { name: "cffi", version: "1.17.1" }
-          - { name: "numpy", version: "2.2.0" }
-          - { name: "cryptography", version: "42.0.8" }
           - { name: "lru-dict", version: "1.3.0" }
-          - { name: "mutagen", version: "1.47.0" }
+          - { name: "zstandard", version: "0.23.0" }
+          - { name: "ujson", version: "5.10.0" }
+          - { name: "numpy", version: "1.26.4" }
+          - { name: "cffi", version: "1.17.1" }
+          - { name: "cryptography", version: "42.0.8" }
 
     steps:
       - uses: actions/checkout@v4
@@ -33,27 +32,16 @@ jobs:
           pip download \
             --no-binary :all: \
             --no-deps \
-            "${{ matrix.package.name }}==${{ matrix.package.version }}" \
+            "${{ matrix.name }}==${{ matrix.version }}" \
             -d ./src_pkg
 
           cd src_pkg
           find . -name "*.tar.gz" -exec tar -xzf {} \;
           find . -name "*.zip" -exec unzip -q {} \;
 
-          PKG_DIR=$(find . -maxdepth 1 -mindepth 1 -type d | head -1 | xargs basename)
+          PKG_DIR=$(find . \( -name "pyproject.toml" -o -name "setup.py" \) | head -1 | xargs dirname | sed 's|^\./||')
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
           echo "Found source: $PKG_DIR"
-
-      - name: Print build identifiers
-        uses: pypa/cibuildwheel@v3.3.1
-        with:
-          package-dir: ./src_pkg/${{ env.PKG_DIR }}
-          output-dir: wheelhouse
-        env:
-          CIBW_PLATFORM: android
-          CIBW_ARCHS_ANDROID: arm64_v8a
-          CIBW_BUILD_FRONTEND: "build"
-          CIBW_PRINT_BUILD_IDENTIFIERS: "true"
 
       - name: Build Android wheel
         uses: pypa/cibuildwheel@v3.3.1
@@ -64,11 +52,13 @@ jobs:
           CIBW_PLATFORM: android
           CIBW_ARCHS_ANDROID: arm64_v8a
           CIBW_BUILD_FRONTEND: "build"
+          CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24"
+          CIBW_BEFORE_ALL: "apt-get install -y libffi-dev pkg-config || true"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.package.name }}
+          name: wheel-${{ matrix.name }}
           path: wheelhouse/*.whl
           if-no-files-found: warn
           retention-days: 30
@@ -91,6 +81,7 @@ jobs:
 
       - name: List wheels
         run: |
+          echo "=== Built wheels ==="
           find all-wheels -name "*.whl" | sort
           echo "Total: $(find all-wheels -name '*.whl' | wc -l)"
 
@@ -102,7 +93,22 @@ jobs:
           files: all-wheels/**/*.whl
           fail_on_unmatched_files: false
           body: |
-            Android ARM64 wheels для Exteragram плагинов.
-            Платформа: android arm64_v8a, Python 3.11
+            ## Android ARM64 Wheels для Exteragram плагинов
+            Платформа: `android arm64_v8a`, Python `3.11`
+
+            ### Пакеты:
+            - regex 2024.11.6
+            - lru-dict 1.3.0
+            - zstandard 0.23.0
+            - ujson 5.10.0
+            - numpy 1.26.4
+            - cffi 1.17.1
+            - cryptography 42.0.8
+
+            ### Использование в плагине:
+            ```python
+            from mandre_lib import MandreInstall
+            MandreInstall("https://github.com/НИК/РЕПО/releases/download/wheels-${{ github.run_number }}/ФАЙЛ.whl")
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
