@@ -27,16 +27,17 @@ jobs:
         run: |
           pip download --no-binary :all: --no-deps \
             "${{ matrix.name }}==${{ matrix.version }}" -d ./src_pkg
-          cd src_pkg
-          find . -name "*.tar.gz" -exec tar -xzf {} \;
-          find . -name "*.zip" -exec unzip -q {} \;
-          PKG_DIR=$(find . \( -name "pyproject.toml" -o -name "setup.py" \) | head -1 | xargs dirname | sed 's|^\./||')
+          find ./src_pkg -name "*.tar.gz" -exec tar -xzf {} -C ./src_pkg \;
+          find ./src_pkg -name "*.zip" -exec unzip -q {} -d ./src_pkg \;
+          PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
+          echo "Found: $PKG_DIR"
+          ls "$PKG_DIR"
 
       - name: Build wheel
         uses: pypa/cibuildwheel@v3.3.1
         with:
-          package-dir: ./src_pkg/${{ env.PKG_DIR }}
+          package-dir: ${{ env.PKG_DIR }}
           output-dir: wheelhouse
         env:
           CIBW_PLATFORM: android
@@ -59,38 +60,27 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r26d
-          add-to-path: true
-
       - name: Download source
         run: |
           pip download --no-binary :all: --no-deps "numpy==1.26.4" -d ./src_pkg
-          cd src_pkg
-          find . -name "*.tar.gz" -exec tar -xzf {} \;
-          PKG_DIR=$(find . \( -name "pyproject.toml" -o -name "setup.py" \) | head -1 | xargs dirname | sed 's|^\./||')
+          find ./src_pkg -name "*.tar.gz" -exec tar -xzf {} -C ./src_pkg \;
+          PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-          echo "ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "Found: $PKG_DIR"
+          ls "$PKG_DIR"
 
       - name: Build numpy
         uses: pypa/cibuildwheel@v3.3.1
         with:
-          package-dir: ./src_pkg/${{ env.PKG_DIR }}
+          package-dir: ${{ env.PKG_DIR }}
           output-dir: wheelhouse
         env:
           CIBW_PLATFORM: android
           CIBW_ARCHS_ANDROID: arm64_v8a
           CIBW_BUILD_FRONTEND: "build"
-          CIBW_BUILD_VERBOSITY: 3
-          CIBW_ENVIRONMENT: >
-            ANDROID_API_LEVEL=24
-            NPY_BLAS_ORDER=
-            NPY_LAPACK_ORDER=
-            CROSS_COMPILE=aarch64-linux-android
-          CIBW_BEFORE_BUILD: "pip install meson-python ninja patchelf"
+          CIBW_BUILD_VERBOSITY: 1
+          CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24 NPY_BLAS_ORDER= NPY_LAPACK_ORDER="
+          CIBW_BEFORE_BUILD: "pip install meson-python ninja patchelf Cython"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -110,23 +100,24 @@ jobs:
       - name: Download source
         run: |
           pip download --no-binary :all: --no-deps "cffi==1.17.1" -d ./src_pkg
-          cd src_pkg
-          find . -name "*.tar.gz" -exec tar -xzf {} \;
-          PKG_DIR=$(find . \( -name "pyproject.toml" -o -name "setup.py" \) | head -1 | xargs dirname | sed 's|^\./||')
+          find ./src_pkg -name "*.tar.gz" -exec tar -xzf {} -C ./src_pkg \;
+          PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
+          echo "Found: $PKG_DIR"
+          ls "$PKG_DIR"
 
       - name: Build cffi
         uses: pypa/cibuildwheel@v3.3.1
         with:
-          package-dir: ./src_pkg/${{ env.PKG_DIR }}
+          package-dir: ${{ env.PKG_DIR }}
           output-dir: wheelhouse
         env:
           CIBW_PLATFORM: android
           CIBW_ARCHS_ANDROID: arm64_v8a
           CIBW_BUILD_FRONTEND: "build"
-          CIBW_BUILD_VERBOSITY: 3
+          CIBW_BUILD_VERBOSITY: 1
           CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24"
-          CIBW_BEFORE_ALL: "apt-get install -y libffi-dev libffi8 || true"
+          CIBW_BEFORE_ALL: "apt-get install -y libffi-dev || true"
           CIBW_BEFORE_BUILD: "pip install pycparser"
 
       - uses: actions/upload-artifact@v4
@@ -144,53 +135,51 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Rust with Android target
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
-      - name: Setup Android NDK
+      - name: Setup NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r26d
           add-to-path: true
 
-      - name: Download source
-        run: |
-          pip download --no-binary :all: --no-deps "cryptography==42.0.8" -d ./src_pkg
-          cd src_pkg
-          find . -name "*.tar.gz" -exec tar -xzf {} \;
-          PKG_DIR=$(find . \( -name "pyproject.toml" -o -name "setup.py" \) | head -1 | xargs dirname | sed 's|^\./||')
-          echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-
-      - name: Configure Rust for Android cross-compile
+      - name: Configure Rust cross-compile
         run: |
           NDK=${{ steps.setup-ndk.outputs.ndk-path }}
           TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
-
           mkdir -p ~/.cargo
-          cat >> ~/.cargo/config.toml << EOF
+          cat >> ~/.cargo/config.toml << CARGO
           [target.aarch64-linux-android]
           linker = "$TOOLCHAIN/aarch64-linux-android24-clang"
           ar = "$TOOLCHAIN/llvm-ar"
-          EOF
-
-          echo "CARGO_BUILD_TARGET=aarch64-linux-android" >> $GITHUB_ENV
+          CARGO
           echo "CC_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang" >> $GITHUB_ENV
           echo "CXX_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang++" >> $GITHUB_ENV
           echo "AR_aarch64_linux_android=$TOOLCHAIN/llvm-ar" >> $GITHUB_ENV
 
+      - name: Download source
+        run: |
+          pip download --no-binary :all: --no-deps "cryptography==42.0.8" -d ./src_pkg
+          find ./src_pkg -name "*.tar.gz" -exec tar -xzf {} -C ./src_pkg \;
+          PKG_DIR=$(find ./src_pkg -maxdepth 1 -mindepth 1 -type d | head -1)
+          echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
+          echo "Found: $PKG_DIR"
+          ls "$PKG_DIR"
+
       - name: Build cryptography
         uses: pypa/cibuildwheel@v3.3.1
         with:
-          package-dir: ./src_pkg/${{ env.PKG_DIR }}
+          package-dir: ${{ env.PKG_DIR }}
           output-dir: wheelhouse
         env:
           CIBW_PLATFORM: android
           CIBW_ARCHS_ANDROID: arm64_v8a
           CIBW_BUILD_FRONTEND: "build"
-          CIBW_BUILD_VERBOSITY: 3
+          CIBW_BUILD_VERBOSITY: 1
           CIBW_ENVIRONMENT: "ANDROID_API_LEVEL=24"
           CIBW_BEFORE_ALL: "apt-get install -y libffi-dev pkg-config || true"
           CIBW_BEFORE_BUILD: "pip install maturin cffi"
@@ -235,19 +224,10 @@ jobs:
             ## Android ARM64 Wheels для Exteragram плагинов
             Платформа: `android arm64_v8a`, Python `3.11`
 
-            ### Пакеты:
-            - regex 2024.11.6 ✅
-            - lru-dict 1.3.0 ✅
-            - zstandard 0.23.0 ✅
-            - ujson 5.10.0 ✅
-            - numpy 1.26.4
-            - cffi 1.17.1
-            - cryptography 42.0.8
-
             ### Использование:
             ```python
             from mandre_lib import MandreInstall
-            MandreInstall("https://github.com/НИК/РЕПО/releases/download/wheels-${{ github.run_number }}/ФАЙЛ.whl")
+            MandreInstall("https://github.com/h-m-256/wheels/releases/download/wheels-${{ github.run_number }}/ФАЙЛ.whl")
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
