@@ -28,36 +28,31 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install cibuildwheel
-        run: pip install cibuildwheel
-
-      - name: Download package source
+      - name: Download source
         run: |
           pip download \
             --no-binary :all: \
             --no-deps \
             "${{ matrix.package.name }}==${{ matrix.package.version }}" \
             -d ./src_pkg
-          
-          # Распаковываем архив
+
           cd src_pkg
-          for f in *.tar.gz; do tar -xzf "$f"; done
+          find . -name "*.tar.gz" -exec tar -xzf {} \;
           find . -name "*.zip" -exec unzip -q {} \;
-          
-          # Находим директорию с исходниками
-          PKG_DIR=$(find . -maxdepth 1 -type d | grep -v "^\.$" | head -1)
+
+          PKG_DIR=$(find . -maxdepth 1 -mindepth 1 -type d | head -1 | xargs basename)
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
-          echo "Found: $PKG_DIR"
+          echo "Found source: $PKG_DIR"
 
       - name: Build Android wheel
-        run: |
-          cd src_pkg/$PKG_DIR
-          python -m cibuildwheel \
-            --platform android \
-            --output-dir ../../wheelhouse
+        uses: pypa/cibuildwheel@v3.3.1
+        with:
+          package-dir: ./src_pkg/${{ env.PKG_DIR }}
+          output-dir: wheelhouse
         env:
-          CIBW_BUILD: "cp311-android_*"
-          CIBW_ARCHS_ANDROID: "arm64-v8a"
+          CIBW_PLATFORM: android
+          CIBW_ARCHS: arm64_v8a
+          CIBW_BUILD: "cp311-*"
           CIBW_BUILD_FRONTEND: "build[uv]"
 
       - name: Upload artifact
@@ -99,13 +94,10 @@ jobs:
           fail_on_unmatched_files: false
           body: |
             ## Android ARM64 Wheels для Exteragram плагинов
+            Платформа: android arm64_v8a, Python 3.11
 
-            Платформа: `android_arm64_v8a`, Python `3.11`
-
-            ### Использование в плагине:
-            ```python
+            Использование:
             from mandre_lib import MandreInstall
-            MandreInstall("https://github.com/ВАШ_НИК/ВАШ_РЕПО/releases/download/wheels-${{ github.run_number }}/ФАЙЛ.whl")
-            ```
+            MandreInstall("https://github.com/НИК/РЕПО/releases/download/wheels-N/ФАЙЛ.whl")
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
